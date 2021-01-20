@@ -4,6 +4,7 @@ from    queue import Queue, Empty
 import  threading
 import  signal
 import  uuid
+import  json
 
 from pprint import pprint
 
@@ -48,14 +49,28 @@ class Logger():
                 print(f"An attempt to create the logging database failed.  Reason: {create_result.reason}")
                 exit()
 
-        self.is_exiting = threading.Event()
+        self.is_exiting = kwargs.get('is_exiting', None)
         self.is_stopped = threading.Event()
-        self._parent_sigint_handler = signal.signal(signal.SIGINT, self._keyboard_interrupt_handler)
+
+        if self.is_exiting is None:
+            self.is_exiting = threading.Event()
+            self._parent_sigint_handler = signal.signal(signal.SIGINT, self._keyboard_interrupt_handler)
 
     def _keyboard_interrupt_handler(self, signum, frame):
-        self.stop()
-        print("Logging stop signal issued...waiting for graceful exit.")
-        self.is_stopped.wait()
+        if self.is_stopped.is_set():
+            raise KeyboardInterrupt
+        else:
+            try:
+                self.stop()
+                print("Logging stop signal issued...waiting for graceful exit.")
+                signal.signal(signal.SIGINT, self._parent_sigint_handler)
+                raise KeyboardInterrupt
+            except Exception as e:
+                raise e
+            finally:
+                self.is_stopped.wait()
+
+            # return self._parent_sigint_handler
 
     def start(self):
         if self.logging_thread is None and self.is_exiting.is_set() is False:
@@ -102,7 +117,7 @@ class Logger():
                     if isinstance(save_result, CouchError):
                         self.create(record=log_record)
 
-                    print(save_result)
+                    # print(save_result)
                     self.log_events.task_done()
                 except Empty:
                     # An empty queue is fine, no-op and wait again for an entry
@@ -112,11 +127,30 @@ class Logger():
 
             print("Signal to abort logging received; logging thread is exiting...")
 
-            print("Dumping uncommited log events to disk.")
-            print("TODO: DUMP ANY QUEUE CONTENTS TO DISK BEFORE EXITING...")
-            with open("../uncommited_logs", "w") as outfile:
-                outfile.write("dddd")
+            if self.log_events.empty() is False:
+                print("Dumping uncommited log events to disk.")
+
+                self.log_events.put(None)
+                log_events = []
+                while True:
+                    log_entry = self.log_events.get(timeout=5)
+
+                    if log_entry is None:
+                        break
+
+                    log_record = {
+                        '_id': f'log_2_{str(uuid.uuid4()).upper()}',
+                        'data': log_entry
+                    }
+
+                    log_record['data']['registrationTimestamp'] = datetime.utcnow().isoformat()
+                    log_events.append(log_record)
+                    self.log_events.task_done()
+
+                with open("../uncommited_logs", "w") as outfile:
+                    outfile.write(json.dumps(log_events))
 
             self.is_stopped.set()
+            print("Logging thread has exited.")
         except Exception as e:
             print(str(e))
