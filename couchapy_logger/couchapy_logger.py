@@ -4,7 +4,6 @@ from    queue import Queue, Empty
 import  threading
 import  signal
 import  uuid
-import  json
 
 from pprint import pprint
 
@@ -49,28 +48,14 @@ class Logger():
                 print(f"An attempt to create the logging database failed.  Reason: {create_result.reason}")
                 exit()
 
-        self.is_exiting = kwargs.get('is_exiting', None)
+        self.is_exiting = threading.Event()
         self.is_stopped = threading.Event()
-
-        if self.is_exiting is None:
-            self.is_exiting = threading.Event()
-            self._parent_sigint_handler = signal.signal(signal.SIGINT, self._keyboard_interrupt_handler)
+        # self._parent_sigint_handler = signal.signal(signal.SIGINT, self._keyboard_interrupt_handler)
 
     def _keyboard_interrupt_handler(self, signum, frame):
-        if self.is_stopped.is_set():
-            raise KeyboardInterrupt
-        else:
-            try:
-                self.stop()
-                print("Logging stop signal issued...waiting for graceful exit.")
-                signal.signal(signal.SIGINT, self._parent_sigint_handler)
-                raise KeyboardInterrupt
-            except Exception as e:
-                raise e
-            finally:
-                self.is_stopped.wait()
-
-            # return self._parent_sigint_handler
+        self.stop()
+        print("Logging stop signal issued...waiting for graceful exit.")
+        self.is_stopped.wait()
 
     def start(self):
         if self.logging_thread is None and self.is_exiting.is_set() is False:
@@ -115,9 +100,27 @@ class Logger():
                     save_result = self.db_conn.db.save(data=log_record)
 
                     if isinstance(save_result, CouchError):
-                        self.create(record=log_record)
+                        print('Attempt to save a log event resulted in an error from the database server.')
 
-                    # print(save_result)
+                        if self.db_conn.session.auth_token == "" or self.db_conn.session.auth_token is None:
+                            print('The logging database connection has timed out.  Attempting to reconnect')
+                            auth_result = self.db_conn.session.authenticate(data={'name': self.config['db']['username'], 'password': self.config['db']['password']})
+
+                            if isinstance(auth_result, CouchError) is False and 'name' in auth_result and auth_result['name'] is not None:
+                                print('Log record has been requeued for submission.')
+                                self.create(record=log_record)
+                                # print(auth_result)
+                            else:
+                                pass
+                                # pprint(auth_result.__dict__)
+                        else:
+                            print('Log record has been requeued for submission.')
+                            pprint(save_result.__dict__)
+                            self.create(record=log_record)
+                    else:
+                        pass
+                        # print(save_result)
+
                     self.log_events.task_done()
                 except Empty:
                     # An empty queue is fine, no-op and wait again for an entry
