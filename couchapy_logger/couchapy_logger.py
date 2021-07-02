@@ -57,10 +57,10 @@ class Logger():
         print("Logging stop signal issued...waiting for graceful exit.")
         self.is_stopped.wait()
 
-    def start(self):
+    def start(self, **kwargs):
         if self.logging_thread is None and self.is_exiting.is_set() is False:
             print("Starting logging thread...")
-            self.logging_thread = threading.Thread(target=self._process_log_events, daemon=False)
+            self.logging_thread = threading.Thread(target=self._process_log_events, daemon=kwargs.get('daemon', False))
             self.logging_thread.start()
         print("Logging thread has started.")
 
