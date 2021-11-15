@@ -1,6 +1,7 @@
 from    couchapy import CouchDB, CouchError
 from    datetime import  datetime
 from    queue import Queue, Empty
+from    sys import exit
 import  threading
 import  signal
 import  uuid
