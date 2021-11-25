@@ -2,7 +2,6 @@ from    couchapy import CouchDB, CouchError
 from    datetime import datetime
 from    json import dumps
 from    queue import Queue, Empty
-from    sys import exit
 import  threading
 from    traceback import print_exc
 import  uuid
