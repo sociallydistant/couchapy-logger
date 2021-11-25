@@ -1,12 +1,11 @@
 from    couchapy import CouchDB, CouchError
-from    datetime import  datetime
+from    datetime import datetime
+from    json import dumps
 from    queue import Queue, Empty
 from    sys import exit
 import  threading
-import  signal
+from    traceback import print_exc
 import  uuid
-
-from pprint import pprint
 
 
 class Logger():
@@ -36,38 +35,33 @@ class Logger():
         self.log_events = Queue()
         self.logging_thread = None
 
+        self.is_exiting = threading.Event()
+        self.is_stopped = threading.Event()
+
         if isinstance(self.db_conn, CouchError) or self.db_conn.session.auth_token is None:
-            human_readable_message = "The logging database connection failed."
-            print(human_readable_message)
-            exit()
+            self.is_stopped.set()
+            self.is_exiting.set()
+            return
 
         if self.db_conn.db.exists() is False:
-            print(f"Logging database does not exist, attempting to create it now using name '{self.config['db']['name']}'")
             create_result = self.db_conn.server.create_database(uri_segments={'db': self.config['db']['name']})
 
             if isinstance(create_result, CouchError):
-                print(f"An attempt to create the logging database failed.  Reason: {create_result.reason}")
-                exit()
-
-        self.is_exiting = threading.Event()
-        self.is_stopped = threading.Event()
-        # self._parent_sigint_handler = signal.signal(signal.SIGINT, self._keyboard_interrupt_handler)
-
-    def _keyboard_interrupt_handler(self, signum, frame):
-        self.stop()
-        print("Logging stop signal issued...waiting for graceful exit.")
-        self.is_stopped.wait()
+                self.is_stopped.set()
+                self.is_exiting.set()
 
     def start(self, **kwargs):
         if self.logging_thread is None and self.is_exiting.is_set() is False:
-            print("Starting logging thread...")
             self.logging_thread = threading.Thread(target=self._process_log_events, daemon=kwargs.get('daemon', False))
             self.logging_thread.start()
-        print("Logging thread has started.")
+        elif self.logging_thread is not None and self.logging_thread.is_alive() is False and self.is_exiting.is_set() is False:
+            self.logging_thread = threading.Thread(target=self._process_log_events, daemon=kwargs.get('daemon', False))
+            self.logging_thread.start()
+        else:
+            pass
 
     def stop(self):
         if self.logging_thread is not None:
-            print("\nSignalling logging thread to exit...")
             self.is_exiting.set()
 
     def create(self, **kwargs):
@@ -83,6 +77,7 @@ class Logger():
 
         if entry is not None:
             self.log_events.put(entry)
+            self.start()
 
     def _process_log_events(self):
         try:
@@ -91,7 +86,7 @@ class Logger():
                     log_entry = self.log_events.get(timeout=5)
 
                     log_record = {
-                        '_id': f'log_2_{str(uuid.uuid4()).upper()}',
+                        '_id': f'log_2_{str(uuid.uuid1()).upper()}',
                         'data': log_entry
                     }
 
@@ -101,39 +96,27 @@ class Logger():
                     save_result = self.db_conn.db.save(data=log_record)
 
                     if isinstance(save_result, CouchError):
-                        print('Attempt to save a log event resulted in an error from the database server.')
-
                         if self.db_conn.session.auth_token == "" or self.db_conn.session.auth_token is None:
-                            print('The logging database connection has timed out.  Attempting to reconnect')
                             auth_result = self.db_conn.session.authenticate(data={'name': self.config['db']['username'], 'password': self.config['db']['password']})
 
                             if isinstance(auth_result, CouchError) is False and 'name' in auth_result and auth_result['name'] is not None:
-                                print('Log record has been requeued for submission.')
                                 self.create(record=log_record)
-                                # print(auth_result)
                             else:
                                 pass
-                                # pprint(auth_result.__dict__)
                         else:
-                            print('Log record has been requeued for submission.')
-                            pprint(save_result.__dict__)
                             self.create(record=log_record)
                     else:
                         pass
-                        # print(save_result)
 
                     self.log_events.task_done()
                 except Empty:
                     # An empty queue is fine, no-op and wait again for an entry
+                    self.stop()
                     pass
-                except Exception as e:
-                    print(str(e))
-
-            print("Signal to abort logging received; logging thread is exiting...")
+                except Exception:
+                    print_exc()
 
             if self.log_events.empty() is False:
-                print("Dumping uncommited log events to disk.")
-
                 self.log_events.put(None)
                 log_events = []
                 while True:
@@ -152,9 +135,10 @@ class Logger():
                     self.log_events.task_done()
 
                 with open("../uncommited_logs", "w") as outfile:
-                    outfile.write(json.dumps(log_events))
+                    outfile.write(dumps(log_events))
 
             self.is_stopped.set()
-            print("Logging thread has exited.")
-        except Exception as e:
-            print(str(e))
+            self.is_exiting.clear()
+
+        except Exception:
+            print_exc()
